@@ -1,0 +1,18 @@
+@import 'tailwindcss';
+@import 'leaflet/dist/leaflet.css';
+
+@theme {
+    --color-medical-teal: #0D9488;
+    --color-dark-slate: #1E293B;
+}
+
+body {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+/* Fix Leaflet marker images issue with bundlers */
+.leaflet-default-icon-path {
+    background-image: url("https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png");
+}

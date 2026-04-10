@@ -2,9 +2,21 @@ const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
 const twilio = require('twilio');
+const http = require('http');
+const { Server } = require('socket.io');
 
 const app = express();
 const port = process.env.PORT || 5000;
+
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: {
+    origin: "*",
+    methods: ["GET", "POST", "PUT"]
+  }
+});
+
+app.set('io', io);
 
 // MIDDLEWARE
 app.use(cors());
@@ -46,7 +58,55 @@ app.post('/api/send-sms', async (req, res) => {
   }
 });
 
-const server = app.listen(port, () => {
+// Global In-Memory State
+app.locals.hospitalState = {
+  isAccepting: true,
+  activeAlerts: [
+    {
+      id: 'AL-1029',
+      time: new Date(Date.now() - 2 * 60000 - 14000).toISOString(),
+      status: 'red',
+      summary: 'Severe chest pain, breathlessness, sweating',
+      transcript: "PulseGrid AI: EMERGENCY HOTLINE. Please describe your emergency via text.\n+234 803 123 4567: My dad... he's clutching his chest. He can't breathe. He's sweating profusely. Please hurry!\nPulseGrid AI: Location received. Tracking exact GPS. Have dispatched an ambulance. Is he conscious?",
+      instructions: "1. Keep patient calm and seated.\n2. Loosen tight clothing.\n3. If prescribed, assist with nitroglycerin.\n4. Prepare for CPR if patient becomes unresponsive.",
+      location: [6.5925, 3.3275],
+      address: "Mobolaji Bank Anthony Way, Ikeja, Lagos",
+    },
+    {
+      id: 'AL-1030',
+      time: new Date(Date.now() - 5 * 60000).toISOString(),
+      status: 'yellow',
+      summary: 'Fractured leg from fall, stable',
+      transcript: "PulseGrid AI: EMERGENCY HOTLINE. How can we help?\n+234 812 987 6543: I fell off a ladder and I think my leg is broken. The bone looks weird but it's not bleeding much.\nPulseGrid AI: Stay still, do not try to move the leg. Medics from LASUTH are en route to your WhatsApp GPS location.",
+      instructions: "1. Do not move the patient unless in immediate danger.\n2. Keep the injured limb straight and immobilized.\n3. Apply ice pack if available without applying pressure.",
+      location: [6.5890, 3.3300],
+      address: "Oba Akran Ave, Ikeja, Lagos",
+    }
+  ]
+};
+
+// Return the entire hospital state
+app.get('/api/hospital/state', (req, res) => {
+  res.json(app.locals.hospitalState);
+});
+
+// App state mock for the endpoints
+app.put('/api/hospital/capacity', (req, res) => {
+  const { isAccepting } = req.body;
+  app.locals.hospitalState.isAccepting = isAccepting;
+  io.emit('capacity_update', { isAccepting });
+  res.json({ success: true, isAccepting });
+});
+
+app.post('/api/dispatch/:id', (req, res) => {
+  const { id } = req.params;
+  const { action } = req.body;
+  app.locals.hospitalState.activeAlerts = app.locals.hospitalState.activeAlerts.filter(a => a.id !== id);
+  io.emit('dispatch_action', { id, action });
+  res.json({ success: true, id, action });
+});
+
+server.listen(port, () => {
   console.log(`🚀 PulseGrid Server is running on port: ${port}`);
 });
 

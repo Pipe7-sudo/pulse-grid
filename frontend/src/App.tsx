@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { socket } from './socket';
 import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
 import { AlertTriangle, Clock, MapPin, MessageCircle, ShieldAlert, CheckCircle, XCircle, Navigation, Radio } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
@@ -17,29 +18,6 @@ interface AlertCard {
   address: string;
 }
 
-const mockAlerts: AlertCard[] = [
-  {
-    id: 'AL-1029',
-    time: new Date(Date.now() - 2 * 60000 - 14000), // 2 mins 14 secs ago
-    status: 'red',
-    summary: 'Severe chest pain, breathlessness, sweating',
-    transcript: "PulseGrid AI: EMERGENCY HOTLINE. Please describe your emergency via text.\n+234 803 123 4567: My dad... he's clutching his chest. He can't breathe. He's sweating profusely. Please hurry!\nPulseGrid AI: Location received. Tracking exact GPS. Have dispatched an ambulance. Is he conscious?",
-    instructions: "1. Keep patient calm and seated.\n2. Loosen tight clothing.\n3. If prescribed, assist with nitroglycerin.\n4. Prepare for CPR if patient becomes unresponsive.",
-    location: [6.5925, 3.3275],
-    address: "Mobolaji Bank Anthony Way, Ikeja, Lagos",
-  },
-  {
-    id: 'AL-1030',
-    time: new Date(Date.now() - 5 * 60000),
-    status: 'yellow',
-    summary: 'Fractured leg from fall, stable',
-    transcript: "PulseGrid AI: EMERGENCY HOTLINE. How can we help?\n+234 812 987 6543: I fell off a ladder and I think my leg is broken. The bone looks weird but it's not bleeding much.\nPulseGrid AI: Stay still, do not try to move the leg. Medics from LASUTH are en route to your WhatsApp GPS location.",
-    instructions: "1. Do not move the patient unless in immediate danger.\n2. Keep the injured limb straight and immobilized.\n3. Apply ice pack if available without applying pressure.",
-    location: [6.5890, 3.3300],
-    address: "Oba Akran Ave, Ikeja, Lagos",
-  },
-];
-
 const MapUpdater = ({ center }: { center: [number, number] }) => {
   const map = useMap();
   useEffect(() => {
@@ -52,13 +30,51 @@ export default function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isAccepting, setIsAccepting] = useState(true);
   const [activeAlert, setActiveAlert] = useState<AlertCard | null>(null);
-  const [alerts, setAlerts] = useState<AlertCard[]>(mockAlerts);
+  const [alerts, setAlerts] = useState<AlertCard[]>([]);
+
+  // Fetch initial state from backend
+  useEffect(() => {
+    fetch('http://localhost:5000/api/hospital/state')
+      .then(res => res.json())
+      .then(data => {
+        setIsAccepting(data.isAccepting);
+        const savedAlerts = data.activeAlerts.map((a: any) => ({
+          ...a,
+          time: new Date(a.time)
+        }));
+        setAlerts(savedAlerts);
+      })
+      .catch(console.error);
+  }, []);
 
   // Real-time ticking clock for "time elapsed"
   const [, setTick] = useState(0);
   useEffect(() => {
     const timer = setInterval(() => setTick((v) => v + 1), 1000);
     return () => clearInterval(timer);
+  }, []);
+
+  // Socket.IO Integration
+  useEffect(() => {
+    socket.on('new_alert', (data) => {
+      const updatedData = { ...data, time: new Date(data.time) };
+      setAlerts(prev => [updatedData, ...prev]);
+    });
+
+    socket.on('capacity_update', (data) => {
+      setIsAccepting(data.isAccepting);
+    });
+
+    socket.on('dispatch_action', (data) => {
+      setAlerts(prev => prev.filter(a => a.id !== data.id));
+      setActiveAlert(curr => curr?.id === data.id ? null : curr);
+    });
+
+    return () => {
+      socket.off('new_alert');
+      socket.off('capacity_update');
+      socket.off('dispatch_action');
+    };
   }, []);
 
   if (!isAuthenticated) {
@@ -91,17 +107,27 @@ export default function App() {
     );
   }
 
-  const handleAction = (id: string) => {
-    // [backend-tag: api_dispatch_action] 
-    // Here we would POST to /api/dispatch/:id
-    setAlerts(alerts.filter(a => a.id !== id));
+  const handleAction = async (id: string, action: string = 'accept') => {
+    // Optimistic update
+    setAlerts(prev => prev.filter(a => a.id !== id));
     if (activeAlert?.id === id) setActiveAlert(null);
+
+    await fetch(`http://localhost:5000/api/dispatch/${id}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action })
+    }).catch(console.error);
   };
 
-  const toggleCapacity = () => {
-    // [backend-tag: api_capacity_update]
-    // Here we would PUT to /api/hospital/capacity
-    setIsAccepting(!isAccepting);
+  const toggleCapacity = async () => {
+    const targetStatus = !isAccepting;
+    setIsAccepting(targetStatus);
+
+    await fetch('http://localhost:5000/api/hospital/capacity', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ isAccepting: targetStatus })
+    }).catch(console.error);
   };
 
   return (
@@ -217,13 +243,13 @@ export default function App() {
 
                 <div className="flex gap-3" onClick={(e) => e.stopPropagation()}>
                   <button
-                    onClick={() => handleAction(alert.id)}
+                    onClick={() => handleAction(alert.id, 'accept')}
                     className="flex-1 bg-teal-600 hover:bg-teal-700 text-white py-2.5 rounded-xl text-sm font-bold transition-colors flex items-center justify-center gap-2 shadow-sm"
                   >
                     <CheckCircle size={18} /> Accept & Dispatch
                   </button>
                   <button
-                    onClick={() => handleAction(alert.id)}
+                    onClick={() => handleAction(alert.id, 'divert')}
                     className="flex-1 bg-white hover:bg-slate-50 text-slate-600 border border-slate-200 py-2.5 rounded-xl text-sm font-bold transition-colors flex items-center justify-center gap-2 shadow-sm"
                   >
                     No Capacity

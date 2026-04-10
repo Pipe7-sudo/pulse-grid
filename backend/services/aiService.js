@@ -6,7 +6,7 @@ class AIService {
   constructor() {
     this.apiKey = process.env.OPENROUTER_API_KEY;
     this.apiUrl = "https://openrouter.ai/api/v1/chat/completions";
-    this.modelId = "google/gemini-2.0-flash-lite-001";
+    this.modelId = "google/gemini-3-flash-preview";
   }
 
   async triageMessage(userInput, history = []) {
@@ -66,6 +66,8 @@ class AIService {
         body: JSON.stringify({
           model: this.modelId,
           messages: messages,
+          temperature: 0, // Lower variance forcibly speeds up token generation
+          provider: { sort: "throughput" }, // OpenRouter native routing optimization
           response_format: { type: "json_object" }
         })
       });
@@ -101,6 +103,8 @@ class AIService {
         },
         body: JSON.stringify({
           model: this.modelId,
+          temperature: 0,
+          provider: { sort: "throughput" },
           messages: [
             {
               role: "user",
@@ -176,6 +180,8 @@ class AIService {
         },
         body: JSON.stringify({
           model: this.modelId,
+          temperature: 0,
+          provider: { sort: "throughput" },
           messages: [{ role: "user", content: prompt }]
         })
       });

@@ -98,12 +98,43 @@ app.put('/api/hospital/capacity', (req, res) => {
   res.json({ success: true, isAccepting });
 });
 
-app.post('/api/dispatch/:id', (req, res) => {
+app.post('/api/dispatch/:id', async (req, res) => {
   const { id } = req.params;
   const { action } = req.body;
-  app.locals.hospitalState.activeAlerts = app.locals.hospitalState.activeAlerts.filter(a => a.id !== id);
-  io.emit('dispatch_action', { id, action });
-  res.json({ success: true, id, action });
+
+  const alertIndex = app.locals.hospitalState.activeAlerts.findIndex(a => a.id === id);
+  if (alertIndex !== -1) {
+    const matchedAlert = app.locals.hospitalState.activeAlerts[alertIndex];
+    // Remove from active queue
+    app.locals.hospitalState.activeAlerts.splice(alertIndex, 1);
+    
+    // Announce to all frontends (so they remove it from their boards)
+    io.emit('dispatch_action', { id, action });
+    
+    // If accepted, notify the patient via WhatsApp
+    if (action === 'accept' && matchedAlert.patient_phone) {
+      if (process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN) {
+        try {
+          const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+          await client.messages.create({
+            body: `🚨 DISPATCH CONFIRMED 🚨\nLASUTH Emergency has accepted your case.\nMedical personnel are preparing for your arrival or dispatching an ambulance to your location. Stay calm.`,
+            from: matchedAlert.sandbox_number || 'whatsapp:+14155238886', // Safely fallback if missing
+            to: matchedAlert.patient_phone
+          });
+          console.log(`[Dispatch] WhatsApp confirmation sent to ${matchedAlert.patient_phone}`);
+        } catch (error) {
+          console.error("Failed to send WhatsApp dispatch notification:", error);
+        }
+      } else {
+        console.warn("Twilio credentials missing. Notifying patient via WhatsApp failed.");
+      }
+    }
+    
+    res.json({ success: true, id, action });
+  } else {
+    // If someone else already accepted it
+    res.status(404).json({ success: false, error: 'Alert not found or already handled by another facility.' });
+  }
 });
 
 server.listen(port, () => {

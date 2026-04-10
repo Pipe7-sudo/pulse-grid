@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const twilio = require('twilio');
 const aiService = require('../services/aiService');
+const { getNearestHospitals } = require('../data/hospitals');
 
 // In-memory session store (Hackathon-ready)
 const sessions = new Map();
@@ -66,10 +67,7 @@ router.post('/', async (req, res) => {
 
       console.log(`[Triage] Result for ${fromNumber}: ${triageResult.triage_tier}`);
 
-      // Dashboard Alert Logic
-      if (triageResult.triage_tier === 'RED' || triageResult.triage_tier === 'YELLOW') {
-        notifyFrontend(req, triageResult, fromNumber, hasLocation, Latitude, Longitude, toNumber);
-      }
+
 
       // Build Final Response
       let responseText = "";
@@ -79,7 +77,7 @@ router.post('/', async (req, res) => {
         responseText = `*PulseGrid Triage: ${triageResult.triage_tier}*\n\n`;
         const instructions = triageResult.citizen_instructions || [];
         const steps = instructions.map((step, i) => `${i + 1}. ${step}`).join('\n');
-        
+
         if (steps) {
           responseText += `*Emergency Steps:*\n${steps}\n\n`;
         }
@@ -89,6 +87,11 @@ router.post('/', async (req, res) => {
         } else {
           responseText += "🚨 *We are matching your case with nearby trauma teams.* Stay calm and keep your phone nearby.";
         }
+      }
+
+      // Dashboard Alert Logic
+      if (triageResult.triage_tier === 'RED' || triageResult.triage_tier === 'YELLOW') {
+        notifyFrontend(req, triageResult, fromNumber, hasLocation, Latitude, Longitude, toNumber, history, responseText);
       }
 
       // Send Asynchronous Payload via REST API
@@ -112,10 +115,10 @@ router.post('/', async (req, res) => {
 });
 
 /**
- * Placeholder for Dashboard sync.
- * Link this to your Socket.io instance for the real-time PulseGrid Map.
+/**
+ * Notify the frontend dashboard via Socket.IO when a new triage alert fires.
  */
-function notifyFrontend(req, data, sender, hasLocation, lat, lng, toNumber) {
+function notifyFrontend(req, data, sender, hasLocation, lat, lng, toNumber, history, responseText) {
   console.log(`[ALERT] High-priority ${data.triage_tier} case for ${sender}`);
   console.log(`[BRIEF] ${data.brief}`);
 
@@ -126,22 +129,36 @@ function notifyFrontend(req, data, sender, hasLocation, lat, lng, toNumber) {
     actualAddress = "Exact GPS Location Received";
   }
 
+  // Find 5 nearest hospitals to patient location
+  const nearestHospitals = getNearestHospitals(actualLocation[0], actualLocation[1], 5);
+
+  // Build transcript from history
+  let fullTranscript = '';
+  if (history && history.length > 0) {
+    fullTranscript = history.filter(h => h.role === 'user').map(h => `${sender}: ${h.text}`).join('\n');
+  } else {
+    fullTranscript = `${sender}: WhatsApp Alert Received`;
+  }
+  if (responseText) {
+    fullTranscript += `\nPulseGrid AI: ${responseText.replace(/\n+/g, ' ')}`;
+  }
+
   const alertData = {
     id: `AL-${Math.floor(1000 + Math.random() * 9000)}`,
     time: new Date().toISOString(),
     status: data.triage_tier.toLowerCase(),
     summary: data.brief || data.medical_intelligence,
-    transcript: `WhatsApp Alert from ${sender}\nPulseGrid AI requested GPS location.`,
+    transcript: fullTranscript,
     instructions: data.citizen_instructions ? data.citizen_instructions.map((step, i) => `${i + 1}. ${step}`).join('\n') : "Awaiting further details.",
     location: actualLocation,
     address: actualAddress,
-    patient_phone: sender, // Store the phone number for text-back dispatch
-    sandbox_number: toNumber || "whatsapp:+14155238886" // Save exactly which sandbox number they used
+    nearestHospitals,              // Array of top 5 closest hospitals
+    patient_phone: sender,
+    sandbox_number: toNumber || "whatsapp:+14155238886"
   };
 
-  // Persist it in memory so it doesn't disappear on frontend refresh
+  // Persist it in memory
   if (req.app.locals.hospitalState) {
-    // Add to the top of the queue
     req.app.locals.hospitalState.activeAlerts.unshift(alertData);
   }
 

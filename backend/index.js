@@ -4,6 +4,7 @@ require('dotenv').config();
 const twilio = require('twilio');
 const http = require('http');
 const { Server } = require('socket.io');
+const { hospitals, getNearestHospitals } = require('./data/hospitals');
 
 const app = express();
 const port = process.env.PORT || 5000;
@@ -29,9 +30,20 @@ app.get('/', (req, res) => {
 });
 
 // MOUNTING THE WHATSAPP ROUTE
-// This means any request to /api/whatsapp will be handled by whatsapp.js
 const whatsappRouter = require('./routes/whatsapp');
 app.use('/api/whatsapp', whatsappRouter);
+
+// Hospital Registry Endpoints
+app.get('/api/hospitals', (req, res) => {
+  res.json(hospitals);
+});
+
+app.get('/api/hospitals/nearest', (req, res) => {
+  const { lat, lng, count } = req.query;
+  if (!lat || !lng) return res.status(400).json({ error: 'lat and lng are required' });
+  const nearest = getNearestHospitals(parseFloat(lat), parseFloat(lng), parseInt(count) || 5);
+  res.json(nearest);
+});
 
 // Original SMS fallback route (Keep this as is)
 app.post('/api/send-sms', async (req, res) => {
@@ -107,10 +119,10 @@ app.post('/api/dispatch/:id', async (req, res) => {
     const matchedAlert = app.locals.hospitalState.activeAlerts[alertIndex];
     // Remove from active queue
     app.locals.hospitalState.activeAlerts.splice(alertIndex, 1);
-    
+
     // Announce to all frontends (so they remove it from their boards)
     io.emit('dispatch_action', { id, action });
-    
+
     // If accepted, notify the patient via WhatsApp
     if (action === 'accept' && matchedAlert.patient_phone) {
       if (process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN) {
@@ -129,7 +141,7 @@ app.post('/api/dispatch/:id', async (req, res) => {
         console.warn("Twilio credentials missing. Notifying patient via WhatsApp failed.");
       }
     }
-    
+
     res.json({ success: true, id, action });
   } else {
     // If someone else already accepted it

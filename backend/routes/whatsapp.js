@@ -89,32 +89,39 @@ router.post('/', async (req, res) => {
         }
       }
 
-      // Dashboard Alert Logic
-      if (triageResult.triage_tier === 'RED' || triageResult.triage_tier === 'YELLOW') {
+      // Dashboard Alert Logic — notify for ALL tiers so the dispatcher always sees activity
+      if (triageResult.triage_tier === 'RED' || triageResult.triage_tier === 'YELLOW' || triageResult.triage_tier === 'GREEN') {
         notifyFrontend(req, triageResult, fromNumber, hasLocation, Latitude, Longitude, toNumber, history, responseText);
       }
 
-      // Send Asynchronous Payload via REST API
-      const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
-      await client.messages.create({
-        body: responseText,
-        from: toNumber, // Automatically extract Twilio Sandbox Sender Number dynamically
-        to: fromNumber
-      });
+      // Send Asynchronous reply back to patient via Twilio REST API
+      if (process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN) {
+        const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+        await client.messages.create({
+          body: responseText,
+          from: toNumber,
+          to: fromNumber
+        });
+      } else {
+        console.warn('[Twilio] Skipping reply — TWILIO_ACCOUNT_SID or TWILIO_AUTH_TOKEN not set in .env');
+      }
 
     } catch (error) {
-      console.error("Critical Triage Error:", error);
-      const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
-      await client.messages.create({
-        body: "PulseGrid Error: Triage Engine timed out. If this is a life-threatening emergency, proceed to the nearest hospital immediately.",
-        from: toNumber,
-        to: fromNumber
-      }).catch(e => console.error("Fallback error:", e));
+      console.error("Critical Triage Error:", error.message);
+      if (process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN) {
+        const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+        await client.messages.create({
+          body: "PulseGrid Error: Triage Engine timed out. If this is a life-threatening emergency, proceed to the nearest hospital immediately.",
+          from: toNumber,
+          to: fromNumber
+        }).catch(e => console.error("Fallback send error:", e.message));
+      } else {
+        console.warn('[Twilio] Skipping fallback reply — credentials not set in .env');
+      }
     }
   })();
 });
 
-/**
 /**
  * Notify the frontend dashboard via Socket.IO when a new triage alert fires.
  */

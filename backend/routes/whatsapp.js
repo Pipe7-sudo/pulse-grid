@@ -12,14 +12,16 @@ const sessions = new Map();
  * Path: POST /api/whatsapp (Matches your Twilio Console)
  */
 router.post('/', async (req, res) => {
-  const { Body: messageBody, From: fromNumber, To: toNumber, Latitude, Longitude, NumMedia, MediaContentType0 } = req.body;
+  const { Body: messageBody, From: fromNumber, To: toNumber, Latitude, Longitude, NumMedia, MediaContentType0, MediaUrl0 } = req.body;
 
-  // 1. Media Checking (Block Voice Notes, Calls, Images)
+  // 1. Media Checking (Block Videos, Images)
   const mediaCount = parseInt(NumMedia || "0");
-  if (mediaCount > 0 && MediaContentType0) {
-    if (MediaContentType0.startsWith('audio') || MediaContentType0.startsWith('video') || MediaContentType0.startsWith('image')) {
+  const isAudio = mediaCount > 0 && MediaContentType0 && MediaContentType0.startsWith('audio');
+  
+  if (mediaCount > 0 && MediaContentType0 && !isAudio) {
+    if (MediaContentType0.startsWith('video') || MediaContentType0.startsWith('image')) {
       const twiml = new twilio.twiml.MessagingResponse();
-      twiml.message("❌ PulseGrid Error: We cannot process voice notes, calls, or media. Please send TEXT or your LIVE LOCATION.");
+      twiml.message("❌ PulseGrid Error: We cannot process video or images yet. Please send TEXT, VOICE NOTES, or your LIVE LOCATION.");
       res.type('text/xml');
       return res.status(200).send(twiml.toString());
     }
@@ -34,9 +36,9 @@ router.post('/', async (req, res) => {
   }
 
   // Validation
-  if (!processingText) {
+  if (!processingText && !isAudio) {
     const twiml = new twilio.twiml.MessagingResponse();
-    twiml.message("Please send text or your live location describing the emergency.");
+    twiml.message("Please send text, a voice note, or your live location describing the emergency.");
     res.type('text/xml');
     return res.status(200).send(twiml.toString());
   }
@@ -49,13 +51,29 @@ router.post('/', async (req, res) => {
 
   // 4. Asynchronous AI & Dispatch Processing
   (async () => {
+    // 4A. Perform Audio Transcription if Audio was sent
+    if (isAudio && MediaUrl0) {
+      console.log(`[WhatsApp] Downloading and transcribing Voice Note from ${fromNumber} via OpenRouter...`);
+      try {
+        const audioRes = await fetch(MediaUrl0);
+        const arrayBuffer = await audioRes.arrayBuffer();
+        const base64Audio = Buffer.from(arrayBuffer).toString('base64');
+        
+        processingText = await aiService.transcribeAudio(base64Audio, MediaContentType0);
+        console.log(`[Transcription Success] "${processingText}"`);
+      } catch (err) {
+        console.error("Audio Transcription Error:", err);
+        processingText = "[Audio transcription failed. Citizen sent an unintelligible voice note.]";
+      }
+    }
+
     // Session Management
     if (!sessions.has(fromNumber)) {
       sessions.set(fromNumber, []);
     }
     const history = sessions.get(fromNumber);
 
-    console.log(`[WhatsApp] New message from ${fromNumber}: "${processingText}"`);
+    console.log(`[WhatsApp] Processing text for ${fromNumber}: "${processingText}"`);
 
     try {
       // AI Engine Call

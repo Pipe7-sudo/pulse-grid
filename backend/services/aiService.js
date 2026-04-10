@@ -16,7 +16,8 @@ class AIService {
 
     const systemPrompt = `
       System Role & Persona:
-      You are the PulseGrid Triage & Readiness Engine. Your goal is to convert raw, panicked citizen text into medical intelligence.
+      You are the PulseGrid Triage & Readiness Engine operating strictly in Lagos, Nigeria. Your goal is to convert raw, panicked citizen text into medical intelligence.
+      You must act with regional awareness. NEVER suggest calling 911. If referring to external emergency numbers, use the Lagos State Toll-Free Emergency numbers: 112 or 767.
 
       Triage Logic:
       - RED (Immediate): Life-threatening (e.g., unconscious, heavy bleeding, heart attack).
@@ -27,6 +28,7 @@ class AIService {
       1. If the situation is vague, status MUST be "INVESTIGATING" and you must ask a "follow_up_question".
       2. If status is "TRIAGED", provide clear instructions and list hardware/specialists.
       3. Always request "LIVE LOCATION" for RED or YELLOW cases if not already provided.
+      4. Remember, NEVER suggest 911 in any instructions.
 
       STRICT JSON Format:
       {
@@ -85,6 +87,51 @@ class AIService {
   }
 
   /**
+   * Transcribes raw audio via OpenRouter Multi-modal support.
+   */
+  async transcribeAudio(base64Audio, mimeType) {
+    try {
+      const response = await fetch(this.apiUrl, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${this.apiKey}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": "https://pulse-grid.app",
+          "X-Title": "PulseGrid Triage Engine"
+        },
+        body: JSON.stringify({
+          model: this.modelId,
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "text", text: "Please carefully transcribe this emergency voice note to text. Output ONLY the raw transcription." },
+                {
+                  type: "image_url", // OpenRouter multimodal parser hook
+                  image_url: { url: `data:${mimeType};base64,${base64Audio}` }
+                }
+              ]
+            }
+          ]
+        })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(`OpenRouter Error: ${errorData.error?.message || response.statusText}`);
+      }
+
+      const data = await response.json();
+      return (data.choices && data.choices[0] && data.choices[0].message.content) 
+        ? data.choices[0].message.content.trim() 
+        : "[Voice note transcribed as empty by OpenRouter]";
+    } catch (error) {
+      console.error("OpenRouter Audio Transcription Error:", error);
+      throw error;
+    }
+  }
+
+  /**
    * Cleans the AI response to extract only valid JSON.
    */
   cleanJSONResponse(rawText) {
@@ -99,6 +146,48 @@ class AIService {
     } catch (err) {
       console.error("JSON Parsing Error:", err);
       throw new Error("Failed to parse AI response as JSON.");
+    }
+  }
+
+  /**
+   * Generates a conversational update for the patient based on hospital actions or messages.
+   */
+  async generatePatientUpdate(dashboardUpdate, transcript) {
+    try {
+      const prompt = `
+      System Role: You are the PulseGrid AI Dispatch Communicator operating out of Lagos, Nigeria. Do NOT use American terminology like 911 (use 112 or 767 if absolutely necessary).
+      Context: Here is the raw WhatsApp transcript of an ongoing emergency:
+      ${transcript}
+
+      The hospital dispatcher has just triggered the following update/action regarding this case:
+      "${dashboardUpdate}"
+
+      Task: Draft a highly professional, reassuring, and clear WhatsApp message directly to the patient communicating this update. Provide clear instructions if implied by the update.
+      Output ONLY the raw formatted text message. No JSON, no explanations.
+      `;
+
+      const response = await fetch(this.apiUrl, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${this.apiKey}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": "https://pulse-grid.app",
+          "X-Title": "PulseGrid Triage Engine"
+        },
+        body: JSON.stringify({
+          model: this.modelId,
+          messages: [{ role: "user", content: prompt }]
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`OpenRouter Error: ${response.statusText}`);
+      }
+      const data = await response.json();
+      return data.choices?.[0]?.message?.content?.trim() || dashboardUpdate;
+    } catch (error) {
+      console.error("AI Communication Error:", error);
+      return `Update from LASUTH: ${dashboardUpdate}`; // Fallback to raw text
     }
   }
 }

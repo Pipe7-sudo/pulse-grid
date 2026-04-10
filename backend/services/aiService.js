@@ -1,12 +1,29 @@
 /**
- * PulseGrid Triage & Readiness Engine
- * Converts raw WhatsApp text into actionable medical intelligence using OpenRouter (Gemini 1.5 Flash).
+ * PulseGrid Triage Engine
+ * Calls Google Gemini 2.0 Flash directly (no OpenRouter hop) for minimum latency.
  */
+
+// System prompt is a constant — not rebuilt per request
+const SYSTEM_PROMPT = `You are the PulseGrid Triage Engine. Convert emergency WhatsApp messages into JSON medical intelligence.
+
+TRIAGE TIERS:
+- RED: Life-threatening (unconscious, heavy bleeding, heart attack, stroke)
+- YELLOW: Urgent but stable (fractures, high fever, chest pain)
+- GREEN: Non-urgent (flu, minor cuts, mild symptoms)
+
+RULES:
+1. If vague, set status="INVESTIGATING" and include follow_up_question.
+2. If clear, set status="TRIAGED" with full instructions.
+3. For RED/YELLOW always set location_requested=true.
+
+RETURN ONLY this JSON, no markdown, no extra text:
+{"triage_tier":"RED|YELLOW|GREEN","status":"TRIAGED|INVESTIGATING","brief":"one sentence for doctor","medical_intelligence":"clinical summary","hardware_needed":[],"specialist_needed":[],"citizen_instructions":["step 1","step 2"],"follow_up_question":"only if INVESTIGATING","location_requested":true}`;
+
 class AIService {
   constructor() {
-    this.apiKey = process.env.OPENROUTER_API_KEY;
-    this.apiUrl = "https://openrouter.ai/api/v1/chat/completions";
-    this.modelId = "google/gemini-2.0-flash-lite-001";
+    this.geminiKey = process.env.GEMINI_API_KEY;
+    // Direct Gemini endpoint — no OpenRouter overhead
+    this.apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent`;
   }
 
   async triageMessage(userInput, history = []) {
@@ -14,88 +31,64 @@ class AIService {
       throw new Error("Invalid input: message text is required.");
     }
 
-    const systemPrompt = `
-      System Role & Persona:
-      You are the PulseGrid Triage & Readiness Engine. Your goal is to convert raw, panicked citizen text into medical intelligence.
+    if (!this.geminiKey) {
+      throw new Error("GEMINI_API_KEY is not set in .env");
+    }
 
-      Triage Logic:
-      - RED (Immediate): Life-threatening (e.g., unconscious, heavy bleeding, heart attack).
-      - YELLOW (Urgent): Serious but stable (e.g., fractures, high fever, moderate pain).
-      - GREEN (Non-Urgent): Minor (e.g., flu, small cuts).
+    // Build conversation contents from history
+    const contents = [];
 
-      Rules:
-      1. If the situation is vague, status MUST be "INVESTIGATING" and you must ask a "follow_up_question".
-      2. If status is "TRIAGED", provide clear instructions and list hardware/specialists.
-      3. Always request "LIVE LOCATION" for RED or YELLOW cases if not already provided.
+    // Map prior turns
+    for (const h of history) {
+      contents.push({
+        role: h.role === 'user' ? 'user' : 'model',
+        parts: [{ text: h.text || "" }]
+      });
+    }
 
-      STRICT JSON Format:
-      {
-        "triage_tier": "RED" | "YELLOW" | "GREEN",
-        "status": "TRIAGED" | "INVESTIGATING",
-        "brief": "One-sentence situational summary for doctors",
-        "medical_intelligence": "Clinical summary",
-        "hardware_needed": ["Ventilator", "Oxygen", etc.],
-        "specialist_needed": ["Surgeon", "Cardiologist", etc.],
-        "citizen_instructions": ["Step 1", "Step 2", "Step 3"],
-        "follow_up_question": "Question if INVESTIGATING",
-        "location_requested": true/false
+    // Current user message
+    contents.push({ role: 'user', parts: [{ text: userInput }] });
+
+    const body = {
+      system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
+      contents,
+      generationConfig: {
+        responseMimeType: "application/json",
+        temperature: 0.1,      // Low temp = faster, more deterministic
+        maxOutputTokens: 512,  // Cap output — triage JSON rarely needs more
       }
-    `;
+    };
 
     try {
-      // Map history to OpenAI format
-      const messages = [
-        { role: "system", content: systemPrompt },
-        ...history.map(h => ({
-          role: h.role === 'user' ? 'user' : 'assistant',
-          content: h.text || ""
-        })),
-        { role: "user", content: userInput }
-      ];
-
-      const response = await fetch(this.apiUrl, {
+      const response = await fetch(`${this.apiUrl}?key=${this.geminiKey}`, {
         method: "POST",
-        headers: {
-          "Authorization": `Bearer ${this.apiKey}`,
-          "Content-Type": "application/json",
-          "HTTP-Referer": "https://pulse-grid.app", // Optional for OpenRouter
-          "X-Title": "PulseGrid Triage Engine" // Optional for OpenRouter
-        },
-        body: JSON.stringify({
-          model: this.modelId,
-          messages: messages,
-          response_format: { type: "json_object" }
-        })
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
       });
 
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(`OpenRouter Error: ${errorData.error?.message || response.statusText}`);
+        const err = await response.json();
+        throw new Error(`Gemini Error: ${err.error?.message || response.statusText}`);
       }
 
       const data = await response.json();
-      const responseText = data.choices[0].message.content;
+      const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
 
-      // Ensure JSON is clean
-      return this.cleanJSONResponse(responseText);
+      if (!rawText) throw new Error("Empty response from Gemini.");
+
+      return this.cleanJSONResponse(rawText);
     } catch (error) {
-      console.error("AI Triage Error (OpenRouter):", error);
+      console.error("AI Triage Error (Gemini):", error);
       throw new Error(`Failed to triage message: ${error.message}`);
     }
   }
 
-  /**
-   * Cleans the AI response to extract only valid JSON.
-   */
   cleanJSONResponse(rawText) {
     try {
       const jsonStart = rawText.indexOf('{');
       const jsonEnd = rawText.lastIndexOf('}');
-      if (jsonStart === -1 || jsonEnd === -1) {
-        return JSON.parse(rawText);
-      }
-      const jsonStr = rawText.substring(jsonStart, jsonEnd + 1);
-      return JSON.parse(jsonStr);
+      if (jsonStart === -1 || jsonEnd === -1) return JSON.parse(rawText);
+      return JSON.parse(rawText.substring(jsonStart, jsonEnd + 1));
     } catch (err) {
       console.error("JSON Parsing Error:", err);
       throw new Error("Failed to parse AI response as JSON.");

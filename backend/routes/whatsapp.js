@@ -124,6 +124,8 @@ router.post('/', async (req, res) => {
 
 /**
  * Notify the frontend dashboard via Socket.IO when a new triage alert fires.
+ * Deduplicates by patient_phone — updates existing alert instead of creating a new card.
+ * Emits only to the nearest hospitals' socket rooms, not globally.
  */
 function notifyFrontend(req, data, sender, hasLocation, lat, lng, toNumber, history, responseText) {
   console.log(`[ALERT] High-priority ${data.triage_tier} case for ${sender}`);
@@ -136,10 +138,9 @@ function notifyFrontend(req, data, sender, hasLocation, lat, lng, toNumber, hist
     actualAddress = "Exact GPS Location Received";
   }
 
-  // Find 5 nearest hospitals to patient location
   const nearestHospitals = getNearestHospitals(actualLocation[0], actualLocation[1], 5);
 
-  // Build transcript from history
+  // Build full transcript from conversation history
   let fullTranscript = '';
   if (history && history.length > 0) {
     fullTranscript = history.filter(h => h.role === 'user').map(h => `${sender}: ${h.text}`).join('\n');
@@ -150,29 +151,68 @@ function notifyFrontend(req, data, sender, hasLocation, lat, lng, toNumber, hist
     fullTranscript += `\nPulseGrid AI: ${responseText.replace(/\n+/g, ' ')}`;
   }
 
+  const io = req.app.get('io');
+
+  // ─── DEDUPLICATION: Check if this patient already has an active alert ─────
+  const existingIdx = req.app.locals.hospitalState?.activeAlerts.findIndex(
+    a => a.patient_phone === sender
+  );
+
+  if (existingIdx !== -1) {
+    // Patient already in queue — update their card, don't create a new one
+    const existing = req.app.locals.hospitalState.activeAlerts[existingIdx];
+    existing.status = data.triage_tier.toLowerCase();
+    existing.summary = data.brief || data.medical_intelligence || existing.summary;
+    if (data.citizen_instructions?.length) {
+      existing.instructions = data.citizen_instructions.map((step, i) => `${i + 1}. ${step}`).join('\n');
+    }
+    existing.transcript = fullTranscript;
+    if (hasLocation && lat && lng) {
+      existing.location = actualLocation;
+      existing.address = actualAddress;
+      existing.nearestHospitals = nearestHospitals;
+    }
+    existing.updatedAt = new Date().toISOString();
+
+    // Emit UPDATE (not new) to the same hospital rooms
+    if (io) {
+      (existing.nearestHospitals || []).forEach(h => {
+        io.to(`hospital:${h.id}`).emit('update_alert', existing);
+      });
+    }
+    console.log(`[Update] Alert for ${sender} updated → ${data.triage_tier}`);
+    return;
+  }
+
+  // ─── NEW ALERT ────────────────────────────────────────────────────────────
   const alertData = {
     id: `AL-${Math.floor(1000 + Math.random() * 9000)}`,
     time: new Date().toISOString(),
     status: data.triage_tier.toLowerCase(),
     summary: data.brief || data.medical_intelligence,
     transcript: fullTranscript,
-    instructions: data.citizen_instructions ? data.citizen_instructions.map((step, i) => `${i + 1}. ${step}`).join('\n') : "Awaiting further details.",
+    instructions: data.citizen_instructions
+      ? data.citizen_instructions.map((step, i) => `${i + 1}. ${step}`).join('\n')
+      : "Awaiting further details.",
     location: actualLocation,
     address: actualAddress,
-    nearestHospitals,              // Array of top 5 closest hospitals
+    nearestHospitals,
     patient_phone: sender,
     sandbox_number: toNumber || "whatsapp:+14155238886"
   };
 
-  // Persist it in memory
   if (req.app.locals.hospitalState) {
     req.app.locals.hospitalState.activeAlerts.unshift(alertData);
   }
 
-  const io = req.app.get('io');
+  // Emit ONLY to the 5 nearest hospitals' socket rooms
   if (io) {
-    io.emit('new_alert', alertData);
+    nearestHospitals.forEach(h => {
+      io.to(`hospital:${h.id}`).emit('new_alert', alertData);
+    });
+    console.log(`[Emit] new_alert sent to rooms: ${nearestHospitals.map(h => h.id).join(', ')}`);
   }
 }
 
 module.exports = router;
+

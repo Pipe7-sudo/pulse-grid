@@ -21,6 +21,14 @@ const io = new Server(server, {
 
 app.set('io', io);
 
+// Socket Room Management — each hospital dashboard joins their own room
+io.on('connection', (socket) => {
+  socket.on('join_hospital', (hospitalId) => {
+    socket.join(`hospital:${hospitalId}`);
+    console.log(`[Socket] Hospital ${hospitalId} joined dashboard room`);
+  });
+});
+
 // MIDDLEWARE
 app.use(cors());
 app.use(express.json()); // For React frontend JSON requests
@@ -75,28 +83,8 @@ app.post('/api/send-sms', async (req, res) => {
 // Global In-Memory State
 app.locals.hospitalState = {
   isAccepting: true,
-  activeAlerts: [
-    {
-      id: 'AL-1029',
-      time: new Date(Date.now() - 2 * 60000 - 14000).toISOString(),
-      status: 'red',
-      summary: 'Severe chest pain, breathlessness, sweating',
-      transcript: "PulseGrid AI: EMERGENCY HOTLINE. Please describe your emergency via text.\n+234 803 123 4567: My dad... he's clutching his chest. He can't breathe. He's sweating profusely. Please hurry!\nPulseGrid AI: Location received. Tracking exact GPS. Have dispatched an ambulance. Is he conscious?",
-      instructions: "1. Keep patient calm and seated.\n2. Loosen tight clothing.\n3. If prescribed, assist with nitroglycerin.\n4. Prepare for CPR if patient becomes unresponsive.",
-      location: [6.5925, 3.3275],
-      address: "Mobolaji Bank Anthony Way, Ikeja, Lagos",
-    },
-    {
-      id: 'AL-1030',
-      time: new Date(Date.now() - 5 * 60000).toISOString(),
-      status: 'yellow',
-      summary: 'Fractured leg from fall, stable',
-      transcript: "PulseGrid AI: EMERGENCY HOTLINE. How can we help?\n+234 812 987 6543: I fell off a ladder and I think my leg is broken. The bone looks weird but it's not bleeding much.\nPulseGrid AI: Stay still, do not try to move the leg. Medics from LASUTH are en route to your WhatsApp GPS location.",
-      instructions: "1. Do not move the patient unless in immediate danger.\n2. Keep the injured limb straight and immobilized.\n3. Apply ice pack if available without applying pressure.",
-      location: [6.5890, 3.3300],
-      address: "Oba Akran Ave, Ikeja, Lagos",
-    }
-  ]
+  activeAlerts: [],
+  resolvedCases: {} // keyed by hospitalId
 };
 
 // Return the entire hospital state
@@ -114,44 +102,68 @@ app.put('/api/hospital/capacity', (req, res) => {
 
 app.post('/api/dispatch/:id', async (req, res) => {
   const { id } = req.params;
-  const { action } = req.body;
+  const { action, hospitalId } = req.body;
 
   const alertIndex = app.locals.hospitalState.activeAlerts.findIndex(a => a.id === id);
-  if (alertIndex !== -1) {
-    const matchedAlert = app.locals.hospitalState.activeAlerts[alertIndex];
-    // Remove from active queue
-    app.locals.hospitalState.activeAlerts.splice(alertIndex, 1);
-
-    // Announce to all frontends (so they remove it from their boards)
-    io.emit('dispatch_action', { id, action });
-
-    // Notify the patient via WhatsApp with an AI generated update
-    if (matchedAlert.patient_phone) {
-      if (process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN) {
-        try {
-          const rawActionString = action === 'accept' ? 'The hospital has accepted the case and is preparing to dispatch an ambulance or team.' : 'The hospital has no capacity and is diverting the case.';
-          const aiResponse = await aiService.generatePatientUpdate(rawActionString, matchedAlert.transcript);
-
-          const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
-          await client.messages.create({
-            body: aiResponse,
-            from: matchedAlert.sandbox_number || 'whatsapp:+14155238886',
-            to: matchedAlert.patient_phone
-          });
-          console.log(`[Dispatch] AI WhatsApp confirmation sent to ${matchedAlert.patient_phone}`);
-        } catch (error) {
-          console.error("Failed to send WhatsApp dispatch notification:", error);
-        }
-      } else {
-        console.warn("Twilio credentials missing. Notifying patient via WhatsApp failed.");
-      }
-    }
-
-    res.json({ success: true, id, action });
-  } else {
-    // If someone else already accepted it
-    res.status(404).json({ success: false, error: 'Alert not found or already handled by another facility.' });
+  if (alertIndex === -1) {
+    return res.status(404).json({ success: false, error: 'Alert not found or already handled by another facility.' });
   }
+
+  const matchedAlert = app.locals.hospitalState.activeAlerts[alertIndex];
+
+  // 1. Remove from active queue
+  app.locals.hospitalState.activeAlerts.splice(alertIndex, 1);
+
+  // 2. Save to this hospital's resolved cases
+  if (hospitalId) {
+    if (!app.locals.hospitalState.resolvedCases[hospitalId]) {
+      app.locals.hospitalState.resolvedCases[hospitalId] = [];
+    }
+    app.locals.hospitalState.resolvedCases[hospitalId].unshift({
+      ...matchedAlert,
+      resolvedAt: new Date().toISOString(),
+      action,
+      resolvedBy: hospitalId
+    });
+  }
+
+  // 3. Announce to all frontends (so they remove it from their boards)
+  io.emit('dispatch_action', { id, action });
+
+  // 4. Send contextual WhatsApp reply to patient (AI-generated)
+  if (matchedAlert.patient_phone && process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN) {
+    try {
+      const respondingHospital = hospitals.find(h => h.id === hospitalId);
+      const hospitalName = respondingHospital?.name || 'Emergency Services';
+
+      const rawActionString = action === 'dispatch'
+        ? `${hospitalName} has accepted the case and is DISPATCHING an ambulance to your location immediately.`
+        : action === 'invite'
+          ? `${hospitalName} is ready for you. Please proceed to the hospital immediately (INVITE).`
+          : `Management at ${hospitalName} has updated your case status.`;
+
+      const aiResponse = await aiService.generatePatientUpdate(rawActionString, matchedAlert.transcript);
+
+      const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+      await client.messages.create({
+        body: aiResponse,
+        from: matchedAlert.sandbox_number || 'whatsapp:+14155238886',
+        to: matchedAlert.patient_phone
+      });
+      console.log(`[Dispatch] AI WhatsApp confirmation sent to ${matchedAlert.patient_phone}`);
+    } catch (error) {
+      console.error("Failed to send WhatsApp dispatch notification:", error.message);
+    }
+  }
+
+  res.json({ success: true, id, action });
+});
+
+// Get resolved cases for a specific hospital
+app.get('/api/hospital/resolved/:hospitalId', (req, res) => {
+  const { hospitalId } = req.params;
+  const cases = app.locals.hospitalState.resolvedCases[hospitalId] || [];
+  res.json(cases);
 });
 
 // Send custom message from hospital dashboard to patient
@@ -167,10 +179,10 @@ app.post('/api/message/:id', async (req, res) => {
   // Format the text and generate a compassionate AI response based on the doctor's payload
   const rawHospitalNote = `Note from LASUTH dispatcher: "${message}"`;
   const aiFormattedResponse = await aiService.generatePatientUpdate(rawHospitalNote, alert.transcript);
-  
+
   // Append AI response to the local hospital transcript sync
   alert.transcript += `\nPulseGrid AI: ${aiFormattedResponse}`;
-  
+
   // Broadcast updated transcript to dashboard
   io.emit('transcript_update', { id, transcript: alert.transcript });
 

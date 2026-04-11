@@ -8,6 +8,8 @@ import {
 } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 
+const API_BASE = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5000';
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 type TriageStatus = 'red' | 'yellow' | 'green';
 
@@ -171,7 +173,7 @@ export default function App() {
 
   // Load hospital list on mount
   useEffect(() => {
-    fetch('http://localhost:5000/api/hospitals')
+    fetch(`${API_BASE}/api/hospitals`)
       .then(r => r.json())
       .then(setHospitalList)
       .catch(console.error);
@@ -187,7 +189,7 @@ export default function App() {
   }, [currentHospital]);
 
   const loadInitialState = useCallback((hospitalId: string) => {
-    fetch('http://localhost:5000/api/hospital/state')
+    fetch(`${API_BASE}/api/hospital/state`)
       .then(r => r.json())
       .then(data => {
         setIsAccepting(data.isAccepting);
@@ -201,7 +203,7 @@ export default function App() {
       })
       .catch(() => { /* offline: use localStorage */ });
 
-    fetch(`http://localhost:5000/api/hospital/resolved/${hospitalId}`)
+    fetch(`${API_BASE}/api/hospital/resolved/${hospitalId}`)
       .then(r => r.json())
       .then((data: any[]) => {
         const cases = data.map(a => ({ ...a, time: new Date(a.time) })) as ResolvedCase[];
@@ -354,7 +356,7 @@ export default function App() {
     setAlerts(prev => { const u = prev.filter(a => a.id !== id); saveAlertsLS(u); return u; });
     if (activeAlert?.id === id) setActiveAlert(null);
 
-    await fetch(`http://localhost:5000/api/dispatch/${id}`, {
+    await fetch(`${API_BASE}/api/dispatch/${id}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action, hospitalId: currentHospital?.id })
@@ -379,7 +381,7 @@ export default function App() {
   const handleNoCapacity = async (id: string) => {
     setAlerts(prev => { const u = prev.filter(a => a.id !== id); saveAlertsLS(u); return u; });
     if (activeAlert?.id === id) setActiveAlert(null);
-    await fetch(`http://localhost:5000/api/dispatch/${id}`, {
+    await fetch(`${API_BASE}/api/dispatch/${id}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'divert', hospitalId: currentHospital?.id })
     }).catch(console.error);
@@ -396,7 +398,7 @@ export default function App() {
   const toggleCapacity = async () => {
     const next = !isAccepting;
     setIsAccepting(next); saveAcceptingLS(next);
-    await fetch('http://localhost:5000/api/hospital/capacity', {
+    await fetch(`${API_BASE}/api/hospital/capacity`, {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ isAccepting: next })
     }).catch(console.error);

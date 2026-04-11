@@ -192,15 +192,20 @@ app.post('/api/message/:id', async (req, res) => {
   res.json({ success: true, transcript: alert.transcript });
 });
 
-server.listen(port, () => {
-  console.log(`🚀 PulseGrid Server is running on port: ${port}`);
-});
+if (require.main === module) {
+  server.listen(port, () => {
+    console.log(`🚀 PulseGrid Server is running on port: ${port}`);
+  });
 
-// Handle server startup errors
-server.on('error', (error) => {
-  if (error.code === 'EADDRINUSE') {
-    console.error(`❌ Port ${port} is already in use by another process.`);
-  } else {
-    console.error(`❌ Server error: ${error.message}`);
-  }
-});
+  // Handle server startup errors
+  server.on('error', (error) => {
+    if (error.code === 'EADDRINUSE') {
+      console.error(`❌ Port ${port} is already in use by another process.`);
+    } else {
+      console.error(`❌ Server error: ${error.message}`);
+    }
+  });
+}
+
+// Export the app for Vercel Serverless Functions
+module.exports = app;

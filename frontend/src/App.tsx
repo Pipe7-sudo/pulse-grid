@@ -4,7 +4,7 @@ import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
 import {
   AlertTriangle, Clock, MapPin, MessageCircle, ShieldAlert,
   CheckCircle, XCircle, Navigation, Radio, Ambulance, Building2,
-  X, Inbox, Archive, ChevronDown
+  X, Inbox, Archive, ChevronDown, LogOut
 } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 
@@ -273,6 +273,13 @@ export default function App() {
     loadInitialState(hospital.id);
   };
 
+  const handleLogout = () => {
+    setIsAuthenticated(false);
+    setCurrentHospital(null);
+    localStorage.removeItem(LS_HOSPITAL);
+    // Force a fresh socket state if needed, though join_hospital usually handles it
+  };
+
   if (!isAuthenticated) {
     const filteredHospitals = hospitalFilter
       ? hospitalList.filter(h => h.name.toLowerCase().includes(hospitalFilter.toLowerCase()) || h.lga.toLowerCase().includes(hospitalFilter.toLowerCase()))
@@ -454,16 +461,23 @@ export default function App() {
             </div>
           </div>
 
-          <div className="mt-auto">
-            <p className="text-xs font-bold text-slate-400 mb-2 uppercase tracking-widest text-center">Master Capacity</p>
+          <div className="mt-auto space-y-2">
+            <p className="text-xs font-bold text-slate-400 mb-1 uppercase tracking-widest text-center">Master Capacity</p>
             <button onClick={toggleCapacity}
               className={`w-full py-4 rounded-2xl font-black text-sm flex items-center justify-center gap-3 transition-all duration-300 ${isAccepting
-                  ? 'bg-teal-600 text-white shadow-[0_8px_20px_rgba(13,148,136,0.3)] hover:bg-teal-700'
-                  : 'bg-slate-200 text-slate-500 shadow-inner hover:bg-slate-300'
+                ? 'bg-teal-600 text-white shadow-[0_8px_20px_rgba(13,148,136,0.3)] hover:bg-teal-700'
+                : 'bg-slate-200 text-slate-500 shadow-inner hover:bg-slate-300'
                 }`}>
               {isAccepting
                 ? <><CheckCircle size={18} /> ER ACCEPTING</>
                 : <><XCircle size={18} className="text-slate-500" /> ER FULL — DIVERTING</>}
+            </button>
+
+            <button
+              onClick={handleLogout}
+              className="w-full py-2 flex items-center justify-center gap-2 text-[10px] font-bold text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-xl transition-all uppercase tracking-widest"
+            >
+              <LogOut size={12} /> Logout System
             </button>
           </div>
         </div>
@@ -646,8 +660,8 @@ export default function App() {
               <div className="p-5 space-y-5">
                 {/* Status indicator */}
                 <div className={`flex items-center gap-2 text-xs font-bold px-3 py-2 rounded-xl border ${activeAlert.status === 'red' ? 'bg-red-50 border-red-100 text-red-700' :
-                    activeAlert.status === 'yellow' ? 'bg-amber-50 border-amber-100 text-amber-700' :
-                      'bg-green-50 border-green-100 text-green-700'
+                  activeAlert.status === 'yellow' ? 'bg-amber-50 border-amber-100 text-amber-700' :
+                    'bg-green-50 border-green-100 text-green-700'
                   }`}>
                   <span className={`w-2 h-2 rounded-full ${activeAlert.status === 'red' ? 'bg-red-500' : activeAlert.status === 'yellow' ? 'bg-amber-500' : 'bg-green-500'}`}></span>
                   CODE {activeAlert.status.toUpperCase()} — {activeAlert.id}

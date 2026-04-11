@@ -6,6 +6,7 @@ const twilio = require('twilio');
 const http = require('http');
 const { Server } = require('socket.io');
 const { hospitals, getNearestHospitals } = require('./data/hospitals');
+const aiService = require('./services/aiService');
 
 const app = express();
 const port = process.env.PORT || 5000;
@@ -109,9 +110,11 @@ app.post('/api/dispatch/:id', async (req, res) => {
   }
 
   const matchedAlert = app.locals.hospitalState.activeAlerts[alertIndex];
+
+  // 1. Remove from active queue
   app.locals.hospitalState.activeAlerts.splice(alertIndex, 1);
 
-  // Save to this hospital's resolved cases
+  // 2. Save to this hospital's resolved cases
   if (hospitalId) {
     if (!app.locals.hospitalState.resolvedCases[hospitalId]) {
       app.locals.hospitalState.resolvedCases[hospitalId] = [];
@@ -124,33 +127,32 @@ app.post('/api/dispatch/:id', async (req, res) => {
     });
   }
 
-  // Remove from ALL hospital dashboards
+  // 3. Announce to all frontends (so they remove it from their boards)
   io.emit('dispatch_action', { id, action });
 
-  // Send contextual WhatsApp reply to patient
+  // 4. Send contextual WhatsApp reply to patient (AI-generated)
   if (matchedAlert.patient_phone && process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN) {
     try {
-      const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
       const respondingHospital = hospitals.find(h => h.id === hospitalId);
-      const hospitalName = respondingHospital?.name || 'LASUTH Emergency';
+      const hospitalName = respondingHospital?.name || 'Emergency Services';
 
-      let whatsappMsg;
-      if (action === 'dispatch') {
-        whatsappMsg = `� *HELP IS ON THE WAY!*\n\n*${hospitalName}* has dispatched an ambulance to your location.\n\nStay calm and remain where you are. Keep your phone accessible — our team is en route. 🙏`;
-      } else if (action === 'invite') {
-        whatsappMsg = `🏥 *A HOSPITAL IS READY TO RECEIVE YOU*\n\n*${hospitalName}* has a team prepared for your arrival.\n\n📍 *Area:* ${respondingHospital?.lga || ''}, Lagos\n📞 *Contact:* ${respondingHospital?.phone || 'N/A'}\n\nPlease proceed to the hospital immediately. Show this message at reception.`;
-      } else {
-        whatsappMsg = `Update: Your case has been reviewed by ${hospitalName}.`;
-      }
+      const rawActionString = action === 'dispatch'
+        ? `${hospitalName} has accepted the case and is DISPATCHING an ambulance to your location immediately.`
+        : action === 'invite'
+          ? `${hospitalName} is ready for you. Please proceed to the hospital immediately (INVITE).`
+          : `Management at ${hospitalName} has updated your case status.`;
 
+      const aiResponse = await aiService.generatePatientUpdate(rawActionString, matchedAlert.transcript);
+
+      const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
       await client.messages.create({
-        body: whatsappMsg,
+        body: aiResponse,
         from: matchedAlert.sandbox_number || 'whatsapp:+14155238886',
         to: matchedAlert.patient_phone
       });
-      console.log(`[Dispatch] ${action} WhatsApp sent to ${matchedAlert.patient_phone}`);
+      console.log(`[Dispatch] AI WhatsApp confirmation sent to ${matchedAlert.patient_phone}`);
     } catch (error) {
-      console.error('WhatsApp dispatch notification failed:', error.message);
+      console.error("Failed to send WhatsApp dispatch notification:", error.message);
     }
   }
 
@@ -162,6 +164,44 @@ app.get('/api/hospital/resolved/:hospitalId', (req, res) => {
   const { hospitalId } = req.params;
   const cases = app.locals.hospitalState.resolvedCases[hospitalId] || [];
   res.json(cases);
+});
+
+// Send custom message from hospital dashboard to patient
+app.post('/api/message/:id', async (req, res) => {
+  const { id } = req.params;
+  const { message } = req.body;
+
+  const alert = app.locals.hospitalState.activeAlerts.find(a => a.id === id);
+  if (!alert) {
+    return res.status(404).json({ success: false, error: 'Alert not found' });
+  }
+
+  // Format the text and generate a compassionate AI response based on the doctor's payload
+  const rawHospitalNote = `Note from LASUTH dispatcher: "${message}"`;
+  const aiFormattedResponse = await aiService.generatePatientUpdate(rawHospitalNote, alert.transcript);
+
+  // Append AI response to the local hospital transcript sync
+  alert.transcript += `\nPulseGrid AI: ${aiFormattedResponse}`;
+
+  // Broadcast updated transcript to dashboard
+  io.emit('transcript_update', { id, transcript: alert.transcript });
+
+  // Route securely via Twilio REST API
+  if (process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && alert.patient_phone) {
+    try {
+      const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+      await client.messages.create({
+        body: aiFormattedResponse,
+        from: alert.sandbox_number || 'whatsapp:+14155238886',
+        to: alert.patient_phone
+      });
+      console.log(`[Message] AI Processed custom message sent to ${alert.patient_phone}`);
+    } catch (err) {
+      console.error("Failed to send custom message via Twilio:", err);
+    }
+  }
+
+  res.json({ success: true, transcript: alert.transcript });
 });
 
 server.listen(port, () => {

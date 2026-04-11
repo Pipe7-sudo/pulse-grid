@@ -1,27 +1,13 @@
 {
   "version": 2,
-  "name": "pulse-grid-unified",
-  "builds": [
-    {
-      "src": "backend/index.js",
-      "use": "@vercel/node"
-    },
-    {
-      "src": "frontend/package.json",
-      "use": "@vercel/static-build",
-      "config": {
-        "distDir": "dist"
-      }
-    }
-  ],
   "rewrites": [
     {
       "source": "/api/(.*)",
-      "destination": "backend/index.js"
+      "destination": "/api/$1"
     },
     {
-      "source": "/(.*)",
-      "destination": "frontend/$1"
+      "source": "/((?!api/).*)",
+      "destination": "/frontend/$1"
     }
   ]
 }

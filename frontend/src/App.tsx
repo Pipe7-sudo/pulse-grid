@@ -8,7 +8,7 @@ import {
 } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 
-const API_BASE = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5000';
+const API_BASE = import.meta.env.VITE_BACKEND_URL || 'https://pulse-grid-backend.onrender.com';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 type TriageStatus = 'red' | 'yellow' | 'green';
